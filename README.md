@@ -39,16 +39,14 @@ Omarchy / Arch:        sudo pacman -S ffmpeg
 
 ## Usage
 
-Via `uv` (Recommended):  
-
-Common usage ...  
+Via `uv` (Recommended) | Common usage examples ...  
 
 Used most often by OmaRadio  
 `uv run omaradio_numbers_stations.py --audio --format mp3 --degrade heavy --voice bm_daniel --message-speed 0.93 --digit-pause 0.20`
 
 ## Full CLI Reference
 
-Options for `omaradio_numbers_stations.py`...  
+Full options for `omaradio_numbers_stations.py`...  
 
 Run with `uv run omaradio_numbers_stations.py [flags]` (auto-installs dependencies) or `python3 omaradio_numbers_stations.py [flags]`.
 
@@ -128,11 +126,11 @@ These exit immediately and skip generation entirely:
 | `--list-voices` | Print all available Kokoro voices, grouped by language, and exit. |
 
 
-## default vs _nopause Scripts
+## default vs _nopause Script
 
 The default script provides full functionality including control over the pause duration between spoken numbers.
 
 > [!NOTE]
 > the *pause* functionality is slower to run and heavier on CPU usage.
 
-The `_nopause` script is based on an earlier version and provided for situations in which quicker/less-CPU intensive generation is required. It DOES NOT full CLI functionality as described above.
+The `_nopause` script is based on an earlier version and provided for situations in which quicker/less-CPU intensive generation is required. It DOES NOT include full CLI functionality! No Morse Code, No external message files (messages are within the script).

@@ -1,0 +1,18 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Kokoro model weights
+*.bin
+*.onnx
+
+# Audio files 
+*.mp3
+*.wav

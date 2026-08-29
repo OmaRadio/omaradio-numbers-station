@@ -63,6 +63,14 @@ stray character just becomes a '#' in the broadcast rather than stopping
 the script. --write-encoded PATH saves the resulting digit-groups string
 to a plain text file, in the same format --decode reads back in.
 
+Optional third file: morse.txt (--morse-file). If present and non-empty,
+its content is converted to standard Morse code and inserted between
+message_pass_2 and sign_off, framed by its own two break tones. UNLIKE
+announcement.txt/message.txt, this file is NOT auto-created -- if it
+doesn't exist, the whole Morse segment is simply skipped, so this feature
+stays off until you deliberately add the file. Characters with no Morse
+mapping are silently skipped, same policy as the cipher.
+
 Dependencies (only needed for --audio): kokoro-onnx, soundfile, numpy.
 The radio effect and --format mp3/both need ffmpeg on PATH (see below) --
 no extra Python packages either way.
@@ -121,6 +129,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_ANNOUNCEMENT_FILE = SCRIPT_DIR / "announcement.txt"
 DEFAULT_MESSAGE_FILE = SCRIPT_DIR / "message.txt"
+DEFAULT_MORSE_FILE = SCRIPT_DIR / "morse.txt"
 
 _SEED_ANNOUNCEMENT = (
     "This is a test of the OmaRadio broadcast network! "
@@ -156,6 +165,25 @@ def load_text_content(path: Path, seed: str, is_default_path: bool, label: str) 
             print(f"[!] {label} file not found: {path}")
             print(f"    Create it (plain text, UTF-8), or drop the --*-file flag to use the default.")
             raise SystemExit(1)
+
+    return " ".join(path.read_text(encoding="utf-8").split())
+
+
+def load_optional_text(path: Path, is_default_path: bool, label: str) -> str:
+    """
+    Like load_text_content, but for genuinely OPTIONAL content (Morse): if
+    the default path doesn't exist, this returns "" and the feature simply
+    doesn't activate, rather than bootstrapping a file -- so updating the
+    script doesn't silently add new content to broadcasts that didn't ask
+    for it. An explicit custom path that doesn't exist still errors, same
+    as the required content files.
+    """
+    if not path.exists():
+        if is_default_path:
+            return ""
+        print(f"[!] {label} file not found: {path}")
+        print(f"    Create it (plain text, UTF-8), or drop the --*-file flag to use the default.")
+        raise SystemExit(1)
 
     return " ".join(path.read_text(encoding="utf-8").split())
 
@@ -245,10 +273,20 @@ class PacedSpeech:
     digit_pause: float
 
 
+@dataclass
+class MorsePayload:
+    """A Morse-message payload: plain text plus the pitch/speed to render it at."""
+    text: str
+    freq: float
+    wpm: float
+
+
 def build_broadcast_script(announcement: str, hidden_message: str, spy_phonetics: bool = False,
                             tone_freq: float = 1000.0, tone_duration: float = 1.5,
                             tone_at=("interval", "pass-break", "signoff"),
-                            message_speed: float = 0.85, digit_pause: float = 0.15):
+                            message_speed: float = 0.85, digit_pause: float = 0.15,
+                            morse_text: str = "", morse_freq: float = 600.0, morse_wpm: float = 18.0,
+                            morse_break_freq: float = 450.0, morse_break_duration: float = 0.8):
     """
     Returns (script, grouped) where script is a list of (label, kind, payload)
     triples in broadcast order:
@@ -256,6 +294,7 @@ def build_broadcast_script(announcement: str, hidden_message: str, spy_phonetics
       kind == "speech_paced" -> payload is a PacedSpeech (message passes only)
       kind == "tone"         -> payload is (frequency_hz, duration_s) for a
                                  generated marker tone (no TTS involved)
+      kind == "morse"        -> payload is a MorsePayload (no TTS involved)
 
     announcement is spoken as-is. hidden_message is run through the cipher
     (encode -> group) before being spoken as the two message passes -- see
@@ -274,6 +313,12 @@ def build_broadcast_script(announcement: str, hidden_message: str, spy_phonetics
     silence, in seconds, inserted between each spoken digit word within a
     message pass (0 disables it). Neither affects the announcement,
     attention line, or sign-off, which stay at the standard pace.
+
+    morse_text is OPTIONAL: if non-empty (after stripping), it's converted
+    to Morse code and inserted between message_pass_2 and sign_off, framed
+    by its own two break tones (morse_break_freq/morse_break_duration --
+    deliberately separate from both tone_freq and morse_freq). Empty
+    morse_text (the default) means no Morse segment at all.
     """
     grouped = group(encode(hidden_message), size=5)
     n_groups = len(grouped.split(" "))
@@ -290,6 +335,11 @@ def build_broadcast_script(announcement: str, hidden_message: str, spy_phonetics
     if "pass-break" in tone_at:
         script.append(("pass_break", "tone", tone))
     script.append(("message_pass_2", "speech_paced", paced_message))
+    if morse_text.strip():
+        morse_break = (morse_break_freq, morse_break_duration)
+        script.append(("morse_break_before", "tone", morse_break))
+        script.append(("morse_message", "morse", MorsePayload(morse_text, morse_freq, morse_wpm)))
+        script.append(("morse_break_after", "tone", morse_break))
     script.append(("sign_off", "speech", "End of message. End of transmission."))
     if "signoff" in tone_at:
         script.append(("end_tone", "tone", tone))
@@ -534,7 +584,96 @@ def generate_tone(frequency: float, duration: float, sample_rate: int,
 
 
 # ---------------------------------------------------------------------------
-# 9. Optional audio rendering via kokoro-onnx, with radio effect + wav/mp3 output
+# 9. Morse code -- standard International Morse, synthesized with the same
+# generate_tone() primitive as the marker tones (no new dependency).
+#
+# Timing follows the standard ITU ratios, in "units" derived from speed:
+#   unit = 1.2 / wpm seconds           (the PARIS-word speed standard)
+#   dot = 1 unit, dash = 3 units
+#   gap between symbols in a letter = 1 unit
+#   gap between letters              = 3 units
+#   gap between words                = 7 units
+#
+# Covers A-Z, 0-9, and the same punctuation set as the numbers-station
+# cipher's CHARSET (plus '?', very standard in Morse). Characters outside
+# this set are silently skipped -- same "no warning" policy already chosen
+# for the cipher -- rather than producing some ad hoc "unknown" tone.
+# ---------------------------------------------------------------------------
+
+MORSE_CODE = {
+    "A": ".-", "B": "-...", "C": "-.-.", "D": "-..", "E": ".", "F": "..-.",
+    "G": "--.", "H": "....", "I": "..", "J": ".---", "K": "-.-", "L": ".-..",
+    "M": "--", "N": "-.", "O": "---", "P": ".--.", "Q": "--.-", "R": ".-.",
+    "S": "...", "T": "-", "U": "..-", "V": "...-", "W": ".--", "X": "-..-",
+    "Y": "-.--", "Z": "--..",
+    "0": "-----", "1": ".----", "2": "..---", "3": "...--", "4": "....-",
+    "5": ".....", "6": "-....", "7": "--...", "8": "---..", "9": "----.",
+    ".": ".-.-.-", ",": "--..--", ":": "---...", "/": "-..-.", "&": ".-...",
+    "'": ".----.", "!": "-.-.--", "-": "-....-", "?": "..--..",
+}
+
+
+def text_to_morse(text: str) -> str:
+    """
+    Text -> Morse pattern string for display, e.g. 'SOS' -> '... --- ...',
+    'HI THERE' -> '.... .. / - .... . .-. .'. Letters within a word are
+    space-separated; words are separated by ' / '. Characters with no
+    Morse mapping (and not whitespace) are silently skipped.
+    """
+    words = []
+    for word in text.upper().split():
+        letters = [MORSE_CODE[ch] for ch in word if ch in MORSE_CODE]
+        if letters:
+            words.append(" ".join(letters))
+    return " / ".join(words)
+
+
+def generate_morse_audio(text: str, freq: float, wpm: float, sample_rate: int, amplitude: float = 0.5):
+    """
+    Converts text to Morse code and synthesizes it as tone bursts (dots and
+    dashes, via generate_tone()) and silences, at standard ITU timing
+    ratios for the given words-per-minute speed. Returns a float32 numpy
+    array (a single near-silent sample if nothing in the text was
+    encodable). Same silent-skip policy as text_to_morse().
+    """
+    import numpy as np
+
+    unit = 1.2 / wpm
+    fade_ms = min(4.0, unit * 1000 / 4)  # never eat more than 1/4 of the shortest symbol (the dot)
+    dot = generate_tone(freq, unit, sample_rate, amplitude=amplitude, fade_ms=fade_ms)
+    dash = generate_tone(freq, unit * 3, sample_rate, amplitude=amplitude, fade_ms=fade_ms)
+    symbol_gap = np.zeros(int(sample_rate * unit), dtype=np.float32)
+    letter_gap = np.zeros(int(sample_rate * unit * 3), dtype=np.float32)
+    word_gap = np.zeros(int(sample_rate * unit * 7), dtype=np.float32)
+
+    word_chunks = []
+    for word in text.upper().split():
+        patterns = [MORSE_CODE[ch] for ch in word if ch in MORSE_CODE]
+        if not patterns:
+            continue
+        this_word = []
+        for li, pattern in enumerate(patterns):
+            if li > 0:
+                this_word.append(letter_gap)
+            for si, symbol in enumerate(pattern):
+                if si > 0:
+                    this_word.append(symbol_gap)
+                this_word.append(dash if symbol == "-" else dot)
+        word_chunks.append(this_word)
+
+    if not word_chunks:
+        return np.zeros(1, dtype=np.float32)
+
+    chunks = []
+    for i, w in enumerate(word_chunks):
+        if i > 0:
+            chunks.append(word_gap)
+        chunks.extend(w)
+    return np.concatenate(chunks)
+
+
+# ---------------------------------------------------------------------------
+# 10. Optional audio rendering via kokoro-onnx, with radio effect + wav/mp3 output
 # ---------------------------------------------------------------------------
 
 def render_audio(script, out_stem="omaradio_numbers_station", formats=("wav",),
@@ -598,6 +737,11 @@ def render_audio(script, out_stem="omaradio_numbers_station", formats=("wav",),
             print(f"  rendered: {label} ({len(words)} digit words @ speed={payload.speed}, "
                   f"{payload.digit_pause}s gaps between them)")
 
+        elif kind == "morse":
+            m_samples = generate_morse_audio(payload.text, payload.freq, payload.wpm, sample_rate)
+            _add(m_samples)
+            print(f"  rendered: {label} (morse, {payload.freq:g} Hz @ {payload.wpm:g} wpm)")
+
         else:  # kind == "tone"
             freq, dur = payload
             samples = generate_tone(freq, dur, sample_rate)
@@ -644,7 +788,7 @@ def render_audio(script, out_stem="omaradio_numbers_station", formats=("wav",),
 
 
 # ---------------------------------------------------------------------------
-# 10. CLI
+# 11. CLI
 # ---------------------------------------------------------------------------
 
 def main():
@@ -689,6 +833,20 @@ def main():
     parser.add_argument("--write-encoded", metavar="PATH", default=None,
                          help="Also write the encoded digit-groups string to this plain text "
                               "file (same format --decode reads back in)")
+    parser.add_argument("--morse-file", type=Path, default=DEFAULT_MORSE_FILE,
+                         help=f"Optional plain text file also sent in Morse code, between "
+                              f"message_pass_2 and sign_off (default: {DEFAULT_MORSE_FILE.name}, "
+                              f"next to this script). NOT auto-created -- if missing, the Morse "
+                              f"segment is simply skipped")
+    parser.add_argument("--morse-wpm", type=float, default=18.0,
+                         help="Morse code speed in words per minute (default: 18)")
+    parser.add_argument("--morse-freq", type=float, default=600.0,
+                         help="Morse code tone frequency in Hz (default: 600)")
+    parser.add_argument("--morse-break-freq", type=float, default=450.0,
+                         help="Frequency in Hz for the break tones framing the Morse block "
+                              "(default: 450 -- deliberately separate from --tone-freq and --morse-freq)")
+    parser.add_argument("--morse-break-duration", type=float, default=0.8,
+                         help="Duration in seconds for the break tones framing the Morse block (default: 0.8)")
     parser.add_argument("--spy-phonetics", action="store_true",
                          help="Use nadazero/unaone-style digit words")
     parser.add_argument("--decode", metavar="GROUPS", help="Decode a digit-group string and exit")
@@ -724,12 +882,17 @@ def main():
         args.message_file, _SEED_MESSAGE,
         args.message_file == DEFAULT_MESSAGE_FILE, "Message",
     )
+    morse_text = load_optional_text(
+        args.morse_file, args.morse_file == DEFAULT_MORSE_FILE, "Morse",
+    )
 
     script, grouped = build_broadcast_script(
         announcement=announcement, hidden_message=hidden_message,
         spy_phonetics=args.spy_phonetics, tone_freq=args.tone_freq,
         tone_duration=args.tone_duration, tone_at=args.tone_at,
         message_speed=args.message_speed, digit_pause=args.digit_pause,
+        morse_text=morse_text, morse_freq=args.morse_freq, morse_wpm=args.morse_wpm,
+        morse_break_freq=args.morse_break_freq, morse_break_duration=args.morse_break_duration,
     )
 
     print("=== Plaintext test announcement ===")
@@ -738,6 +901,11 @@ def main():
     print("=== Hidden message (plaintext) ===")
     print(hidden_message)
     print()
+    if morse_text.strip():
+        print("=== Morse message (plaintext) ===")
+        print(morse_text)
+        print(text_to_morse(morse_text))
+        print()
     print("=== Encoded numbers-station groups ===")
     print(grouped)
     print()
@@ -762,6 +930,10 @@ def main():
         elif kind == "speech_paced":
             print(payload.text)
             print(f"  (speed={payload.speed:g}, digit_pause={payload.digit_pause:g}s)")
+        elif kind == "morse":
+            print(payload.text)
+            print(f"  {text_to_morse(payload.text)}")
+            print(f"  (freq={payload.freq:g} Hz, wpm={payload.wpm:g})")
         else:
             freq, dur = payload
             print(f"<tone: {freq:g} Hz for {dur:g}s>")

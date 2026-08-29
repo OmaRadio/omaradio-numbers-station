@@ -42,27 +42,84 @@ Common usage ...
 Used most often by OmaRadio 
 `uv run omaradio_numbers_station_pause.py --audio --format mp3 --degrade heavy --voice bm_daniel --message-speed 0.93 --digit-pause 0.20`
 
-Simple usage with defaults
+## Full CLI Reference
 
-```
-    uv run omaradio_numbers_station_pause.py --audio
-    uv run omaradio_numbers_station_pause.py --audio --format mp3
+Options for `omaradio_numbers_station_pause.py`. Run with `uv run omaradio_numbers_station_pause.py [flags]` (auto-installs dependencies) or `python3 omaradio_numbers_station_pause.py [flags]`.
+
+### Full example
+
+All generation flags in one line (excludes `--decode`/`--list-voices`, which are standalone modes that exit before generation — see bottom):
+
+```bash
+uv run omaradio_numbers_station_pause.py --audio --format both --out omaradio_numbers_station --voice af_sarah --lang en-us --model kokoro-v1.0.onnx --voices voices-v1.0.bin --announcement-file announcement.txt --message-file message.txt --morse-file morse.txt --write-encoded encoded.txt --spy-phonetics --degrade classic --keep-dry --tone-freq 1000 --tone-duration 1.5 --tone-at interval pass-break signoff --message-speed 0.85 --digit-pause 0.15 --morse-wpm 18 --morse-freq 600 --morse-break-freq 450 --morse-break-duration 0.8
 ```
 
-The script can also be called via `python` with using `uv` (Direct):  
-```
-Usage:
-    python3 omaradio_numbers_station_pause.py                               # cipher only, no audio
-    python3 omaradio_numbers_station_pause.py --audio                       # render .wav, "classic" radio effect
-    python3 omaradio_numbers_station_pause.py --audio --degrade none        # clean, undegraded take
-    python3 omaradio_numbers_station_pause.py --audio --degrade heavy       # barely-legible static mess
-    python3 omaradio_numbers_station_pause.py --audio --format mp3          # render .mp3 instead
-    python3 omaradio_numbers_station_pause.py --audio --format both         # render both
-    python3 omaradio_numbers_station_pause.py --audio --voice bm_george     # different Kokoro voice
-    python3 omaradio_numbers_station_pause.py --list-voices                 # show all available voices
-    python3 omaradio_numbers_station_pause.py --decode "00 19 12"           # decode a group string and exit
-    python3 omaradio_numbers_station_pause.py --spy-phonetics --audio       # NATO-telephony digit words
-```
+### Content files
+
+| Flag | Default | Description |
+|---|---|---|
+| `--announcement-file` | `announcement.txt` | Spoken test announcement. Auto-created next to the script on first run. |
+| `--message-file` | `message.txt` | Hidden message, run through the numbers-station cipher. Auto-created on first run. |
+| `--morse-file` | `morse.txt` | Optional extra message, sent in Morse code. **Not** auto-created — segment is skipped if missing. |
+| `--write-encoded` | *(none)* | Also write the encoded digit-groups string to this file. |
+
+### Audio output
+
+| Flag | Default | Description |
+|---|---|---|
+| `--audio` | off | Render audio via kokoro-onnx (otherwise just prints the script/cipher). |
+| `--format` | `wav` | `wav`, `mp3`, or `both`. mp3 requires ffmpeg on PATH. |
+| `--out` | `omaradio_numbers_station` | Output filename stem, no extension. |
+| `--voice` | `af_sarah` | Kokoro voice ID. Run `--list-voices` for all 54 options. |
+| `--lang` | auto | kokoro-onnx language tag. Auto-guessed from the `--voice` prefix if omitted. |
+| `--model` | `kokoro-v1.0.onnx` | Path to the Kokoro `.onnx` model file. |
+| `--voices` | `voices-v1.0.bin` | Path to the Kokoro voices `.bin` file. |
+
+### Radio effect
+
+| Flag | Default | Description |
+|---|---|---|
+| `--degrade` | `classic` | Shortwave degradation intensity: `none`, `light`, `classic`, or `heavy`. |
+| `--keep-dry` | off | Also save the pre-effect clean take as `<out>_dry.wav`. |
+
+### Marker tones
+
+| Flag | Default | Description |
+|---|---|---|
+| `--tone-freq` | `1000` | Marker tone frequency, in Hz. |
+| `--tone-duration` | `1.5` | Marker tone duration, in seconds. |
+| `--tone-at` | `interval pass-break signoff` | Where markers play. Pass with no values to disable entirely. |
+
+### Message pacing
+
+| Flag | Default | Description |
+|---|---|---|
+| `--message-speed` | `0.85` | Kokoro speed multiplier, applied to the message passes only. |
+| `--digit-pause` | `0.15` | Silence, in seconds, between each spoken digit word. |
+
+### Morse code
+
+| Flag | Default | Description |
+|---|---|---|
+| `--morse-wpm` | `18` | Morse code speed, in words per minute. |
+| `--morse-freq` | `600` | Morse code tone frequency, in Hz. |
+| `--morse-break-freq` | `450` | Frequency of the break tones framing the Morse block, in Hz. |
+| `--morse-break-duration` | `0.8` | Duration of the break tones framing the Morse block, in seconds. |
+
+### Other
+
+| Flag | Default | Description |
+|---|---|---|
+| `--spy-phonetics` | off | Use nadazero/unaone-style digit words instead of plain digits. |
+
+### Standalone modes
+
+These exit immediately and skip generation entirely:
+
+| Flag | Description |
+|---|---|
+| `--decode GROUPS` | Decode a digit-group string and exit. |
+| `--list-voices` | Print all available Kokoro voices, grouped by language, and exit. |
 
 
 ## _pause vs _nopause Scripts
@@ -73,4 +130,4 @@ The `_pause` script provides the functionality for controlling the pause duratio
 > the `_pause` script is preferred for use as it is the latest version and supports passing in message files.
 > **HOWEVER** It is slower to run and heavier on CPU.
 
-The `_nopause` script is based on an earlier version and provided for situations in which quicker/less-CPU intensive generation is required.
+The `_nopause` script is based on an earlier version and provided for situations in which quicker/less-CPU intensive generation is required. It DOES NOT full CLI functionality as described above.
